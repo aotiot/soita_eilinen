@@ -1,450 +1,334 @@
-# Koodin kuvaus - Beatles "Yesterday" ESP32-soitin
+# Beatles "Yesterday" - ESP32 + MAX98357A + Mozzi
 
-## Yleiskatsaus
+Mozzi-kirjastolla toteutettu Beatles-kappaleen "Yesterday" soitin ESP32-mikrokontrollereille ja MAX98357A I2S-audiovahvistimelle.
 
-Ohjelma on ESP32-pohjainen äänisyntetisaattori, joka soittaa Beatles-kappaleen "Yesterday" melodian. Se käyttää Mozzi-kirjastoa äänensynteesiin ja MAX98357A I2S-vahvistinta audiotoistoon.
+## Mitä tämä tekee
 
-## Arkkitehtuuri
+Ohjelma soittaa "Yesterday"-kappaleen melodian käyttäen Mozzi-äänisyntetisaattorikirjastoa. Melodia koostuu kahdesta säkeistöstä ja kertosäkeestä. Ohjelma toistaa melodian loputtomasti.
 
-### Komponenttihierarkia
+## Laitteisto
+
+### Tuetut mikrokontrollerit
+
+- ESP32-S2
+- ESP32-S3 (suositeltu, kaksi I2S-periferiaa)
+- ESP32-C6
+- ESP32-C3
+- ESP32 (alkuperäinen, vaatii eri GPIO-pinnit)
+
+### MAX98357A I2S-audiovahvistin
+
+3W Class D -audiovahvistin I2S-digitaalitulolla. Sisältää:
+- I2S-dekooderin
+- DAC:n (Digital-to-Analog Converter)
+- Vahvistimen
+
+### Kytkennät
 
 ```
-Arduino Framework
-    ↓
-Mozzi Library
-    ↓
-├─ Audio Synthesis (updateAudio @ 16384 Hz)
-├─ Control Logic (updateControl @ 64 Hz)
-└─ I2S Output Driver
-    ↓
-MAX98357A DAC + Amplifier
-    ↓
-Speaker (4-8Ω)
+MAX98357A      ESP32-S2/S3/C6
+─────────      ──────────────
+LRC (LRCLK) ── GPIO 4
+BCLK        ── GPIO 5
+DIN         ── GPIO 6
+GND         ── GND
+VIN         ── 5V (tai 3.3V)
 ```
 
-### Datavirta
+**Kaiutin:** 4-8 ohmin kaiutin MAX98357A:n + ja - liittimiin.
 
+### Lisäasetukset MAX98357A:lla
+
+- **SD (Shutdown)**: Kytke GND = päällä, VIN = pois päältä
+- **GAIN**: Säädä vahvistusta
+  - GND = 3dB
+  - VIN = 9dB  
+  - Irti = 15dB (oletus)
+
+## Asennus
+
+### 1. Arduino IDE
+
+Asenna ESP32-tuki:
+1. File → Preferences
+2. Additional Board Manager URLs: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
+3. Tools → Board Manager → "esp32" → Install
+
+### 2. Mozzi-kirjasto
+
+Asenna Mozzi:
+1. Sketch → Include Library → Manage Libraries
+2. Etsi "Mozzi"
+3. Asenna uusin versio
+
+### 3. Mozzi-konfiguraatio ESP32-S2/S3/C6:lle
+
+Siirry Mozzi-kirjaston kansioon:
 ```
-MIDI Note Data → mtof() → Frequency (Hz)
-                              ↓
-                    Oscillator 1 (Sin) ───┐
-                    Oscillator 2 (Saw) ───┤ → Mixer
-                                           ↓
-                                    ADSR Envelope
-                                           ↓
-                                    8-bit Sample
-                                           ↓
-                                    I2S Protocol
-                                           ↓
-                                    MAX98357A
+Documents/Arduino/libraries/Mozzi/
 ```
 
-## Keskeiset osat
+Avaa tiedosto `AudioConfigESP32.h` ja varmista I2S-pinnit:
 
-### 1. Oskillaattorit (Oscillators)
+```cpp
+#define I2S_BCLK_PIN 5
+#define I2S_LRCLK_PIN 4  
+#define I2S_DOUT_PIN 6
+```
 
-**Mikä:** Oskillaattorit generoivat perusääniaallon.
+Jos tiedostossa on eri arvot, muuta ne vastaamaan yllä olevia.
 
-**Miten toimii:**
+### 4. Valitse oikea levy Arduino IDE:ssä
+
+Tools → Board → ESP32 Arduino → valitse:
+- ESP32S2 Dev Module
+- ESP32S3 Dev Module
+- ESP32C6 Dev Module
+
+### 5. Lataa koodi
+
+1. Avaa `yesterday_esp32.ino`
+2. Kytke ESP32-laitteesi USB:llä
+3. Tools → Port → valitse oikea portti
+4. Upload
+
+## Käyttö
+
+1. Kytke virta ESP32:een
+2. Melodia alkaa soida automaattisesti
+3. Serial Monitor (115200 baud) näyttää:
+   - Laitteen tyypin
+   - Kytkentäohjeet
+   - Soitettavat nuotit reaaliajassa
+
+## Koodin rakenne
+
+### Pääkomponentit
+
+#### 1. Oskillaattorit
 ```cpp
 Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> aOscil(SIN2048_DATA);
+Oscil<SAW2048_NUM_CELLS, AUDIO_RATE> aOscil2(SAW2048_DATA);
 ```
+Kaksi oskillaattoria täyteläisemmän soundin saamiseksi. Toinen käyttää sini-aaltomuotoa, toinen saha-aaltomuotoa.
 
-Tämä luo oskillaattorin, joka:
-- Käyttää 2048 näytteen sini-aaltotaulukkoa
-- Lukee taulukkoa taajuuden määräämällä nopeudella
-- Tuottaa 16384 näytettä sekunnissa
-
-**Esimerkki:**
-Jos taajuus on 440 Hz (A4), oskillaattori lukee sini-taulukkoa niin nopeasti, että se pyörähtää kokonaan läpi 440 kertaa sekunnissa.
-
-**Miksi kaksi oskillaattoria?**
+#### 2. ADSR Envelope
 ```cpp
-aOscil.setFreq(freq);       // 440.0 Hz
-aOscil2.setFreq(freq * 1.01); // 444.4 Hz
+ADSR <CONTROL_RATE, AUDIO_RATE> envelope;
 ```
+Attack-Decay-Sustain-Release -verhokäyrä antaa nuoteille luonnollisen dynamiikan.
 
-Toinen oskillaattori on 1% korkeammalla taajuudella. Tämä luo:
-- **Beats-efektin:** Taajuusero aiheuttaa värähtelyn (4.4 Hz tässä tapauksessa)
-- **Chorus-efektin:** Soundi kuulostaa täyteläisemmältä, kuin kaksi soitinta soittaisi yhtä aikaa
-- **Stereomaisen vaikutelman:** Vaikka lähtö on mono, ääni tuntuu leveämmältä
-
-### 2. ADSR-envelope
-
-**Mikä:** Attack-Decay-Sustain-Release on verhokäyrä, joka määrää miten äänen voimakkuus muuttuu ajan funktiona.
-
-**Vaiheet:**
-```
-Amplitude
-    ↑
-255 |     A
-    |    /|\
-200 |   / | \___S_____
-    |  /  |D          \
-  0 |_/_______________\R___→ Time
-      20  50   300   100 (ms)
-```
-
-- **Attack (20ms):** Ääni nousee nopeasti täyteen voimakkuuteen (0→255)
-- **Decay (50ms):** Ääni laskee sustain-tasolle (255→200)
-- **Sustain (300ms):** Ääni pysyy tasaisena (200)
-- **Release (100ms):** Ääni häipyy kun nuotti lopetetaan (200→0)
-
-**Koodi:**
+#### 3. Melodiadata
 ```cpp
-envelope.setADLevels(255, 200);        // Attack peak, Sustain level
-envelope.setTimes(20, 50, 300, 100);   // A, D, S, R millisekunteina
+Note melody[] = { ... };
 ```
+Rakenne sisältää nuotin korkeuden (MIDI-numero) ja keston (millisekunteina).
 
-**Miksi tarvitaan?**
-Ilman envelopea nuotit alkaisivat ja loppuisivat äkillisesti (click-ääni). Envelope tekee nuoteista luonnollisen kuuloisia.
+### Keskeiset funktiot
 
-### 3. Melodiadata
+#### `setup()`
+- Käynnistää sarjaliikenneyhteyden
+- Tunnistaa ESP32-laitteen tyypin
+- Alustaa Mozzin ja ADSR-envelopen
+- Käynnistää ensimmäisen nuotin
 
-**Rakenne:**
+#### `playNote(int noteIndex)`
+- Soittaa yksittäisen nuotin tai tauon
+- Asettaa oskillaattoreiden taajuuden
+- Käynnistää ADSR-envelopen
+- Tulostaa nuotin nimen Serial Monitoriin
+
+#### `updateControl()`
+- Suoritetaan kontrollinopeudella (64 Hz)
+- Tarkistaa onko aika siirtyä seuraavaan nuottiin
+- Päivittää ADSR-envelopen tilan
+
+#### `updateAudio()`
+- Suoritetaan audionäytteenottotaajuudella (16384 Hz)
+- Generoi audionäytteet
+- Miksaa kaksi oskillaattoria
+- Soveltaa ADSR-envelopea
+- Palauttaa näytteen I2S:lle
+
+### Äänensynteesi
+
+Ohjelma käyttää kahta oskillaattoria pienen detune-efektin kanssa:
 ```cpp
-struct Note {
-  byte pitch;              // MIDI-numero (60-79) tai REST (0)
-  unsigned int duration;   // Millisekunteina
-};
+aOscil.setFreq(freq);
+aOscil2.setFreq(freq * 1.01); // 1% korkeampi taajuus
 ```
 
-**MIDI-järjestelmä:**
-```
-C4 = 60 → mtof(60) → 261.63 Hz
-D4 = 62 → mtof(62) → 293.66 Hz
-E4 = 64 → mtof(64) → 329.63 Hz
-```
+Tämä luo chorus-tyyppisen efektin, joka tekee soundista täyteläisemmän.
 
-mtof()-funktio käyttää kaavaa:
-```
-freq = 440 * 2^((note - 69) / 12)
-```
+## Säätömahdollisuudet
 
-Missä note on MIDI-numero ja 69 = A4 (440 Hz).
+### Muuta tempoa
 
-**Esimerkki melodiasta:**
+Muuta nuottien kestoja `melody[]` -taulukossa:
 ```cpp
-Note melody[] = {
-  {F4, 300},  // "Yes-" (F4, 300ms)
-  {E4, 300},  // "ter-" (E4, 300ms)
-  {D4, 600},  // "day"  (D4, 600ms)
-  ...
-};
+{F4, 300},  // 300ms → 150ms = kaksinkertainen tempo
 ```
 
-### 4. Ajastusjärjestelmä
+### Muuta soundia
 
-**Kaksi tasoa:**
-
-#### a) Control Rate (64 Hz)
+Vaihda aaltomuotoja:
 ```cpp
-void updateControl() {
-  // Suoritetaan 64 kertaa sekunnissa
-  // Hoitaa: nuottien vaihto, envelopen päivitys
-}
+#include <tables/triangle2048_int8.h>
+#include <tables/square_no_alias_2048_int8.h>
+
+Oscil<TRIANGLE2048_NUM_CELLS, AUDIO_RATE> aOscil(TRIANGLE2048_DATA);
 ```
 
-64 Hz riittää musiikin logiikalle, koska:
-- Nopein nuotti kestää ~200ms
-- 64 Hz = päivitys joka 15.6ms
-- Tarkkuus riittää musiikille
+Käytettävissä olevat aaltomuodot:
+- `sin` - Pehmeä, puhdas ääni
+- `saw` - Terävä, kirkas ääni
+- `square` - Onttoa, videöpelimäinen ääni
+- `triangle` - Pehmeämpi kuin saha
 
-#### b) Audio Rate (16384 Hz)
-```cpp
-AudioOutput_t updateAudio() {
-  // Suoritetaan 16384 kertaa sekunnissa
-  // Hoitaa: audionäytteiden generointi
-}
-```
-
-16384 Hz audionäytteenottotaajuus:
-- Nyquist-teoreeman mukaan max taajuus = 16384/2 = 8192 Hz
-- Riittää musiikille (ihmisen kuuloalue ~20-20000 Hz)
-- Alempi kuin CD-laatu (44100 Hz), mutta toimii ESP32:lla kevyesti
-
-### 5. I2S-protokolla
-
-**Signaalit:**
-```
-BCLK (Bit Clock):  ┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌┐┌
-                   └┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└┘└
-
-LRCLK (Word Sel):  ┌───────────────┐───────────────┐
-                   └───────────────┘───────────────┘
-                   L Channel        R Channel
-
-DIN (Data):        ═══D15D14D13...D0═══D15D14D13...D0═══
-```
-
-**Parametrit:**
-- BCLK = 16384 Hz × 32 bit × 2 kanavaa = 1,048,576 Hz
-- LRCLK = 16384 Hz (näytteenottotaajuus)
-- Data = 16-bit näytteet (vaikka generoimme 8-bit)
-
-## Ohjelman kulku
-
-### Käynnistys (setup)
-
-```
-1. Serial.begin(115200)
-   └─ Käynnistä sarjaliikenne debuggausta varten
-
-2. Tunnista ESP32-laitteen tyyppi
-   └─ Tulosta laitetyyppi ja I2S-periferioiden määrä
-
-3. startMozzi(CONTROL_RATE)
-   ├─ Alusta I2S-ajuri
-   ├─ Luo DMA-puskurit
-   ├─ Käynnistä ajastimet
-   └─ Rekisteröi callback-funktiot
-
-4. envelope.setADLevels(255, 200)
-   └─ Konfiguroi ADSR-verhokäyrä
-
-5. playNote(0)
-   └─ Aloita ensimmäinen nuotti
-```
-
-### Pääsilmukka (loop)
-
-```
-loop() {
-  audioHook();  // Mozzin sisäinen funktio
-}
-```
-
-audioHook() hoitaa:
-```
-┌─────────────────────────────────────┐
-│ audioHook()                         │
-├─────────────────────────────────────┤
-│ 1. Tarkista onko päivitysaika?      │
-│    ↓                                │
-│ 2. Kutsu updateControl()            │
-│    (jos 15.6ms kulunut)             │
-│    ↓                                │
-│ 3. Silmukka 256 kertaa:             │
-│    ├─ Kutsu updateAudio()           │
-│    └─ Tallenna näyte DMA-puskuriin  │
-│    ↓                                │
-│ 4. Kun puskuri täynnä:              │
-│    └─ I2S-ajuri lähettää MAX98357A  │
-└─────────────────────────────────────┘
-```
-
-### Nuotin soitto
-
-```
-playNote(index) kutsutaan
-    ↓
-Hae nuotti melody[index]
-    ↓
-Onko REST?
-    ├─ Kyllä: notePlaying = false
-    │         (updateAudio() palauttaa 0)
-    │
-    └─ Ei: float freq = mtof(pitch)
-           ↓
-           aOscil.setFreq(freq)
-           aOscil2.setFreq(freq * 1.01)
-           ↓
-           envelope.noteOn()
-           ↓
-           notePlaying = true
-           ↓
-           (updateAudio() generoi näytteitä)
-```
-
-### Audionäytteen generointi
+### Säädä ADSR-envelopea
 
 ```cpp
-AudioOutput_t updateAudio() {
-  if (notePlaying) {
-    // 1. Hae näytteet oskillaattoreilta
-    int sample1 = aOscil.next();   // -128 ... +127
-    int sample2 = aOscil2.next();  // -128 ... +127
-    
-    // 2. Miksaa (keskiarvo)
-    int mixed = (sample1 + sample2) >> 1;  // -128 ... +127
-    
-    // 3. Sovella envelope
-    int envLevel = envelope.next();        // 0 ... 255
-    int output = (mixed * envLevel) >> 8;  // -128 ... +127
-    
-    // 4. Palauta I2S:lle
-    return MonoOutput::from8Bit(output);
-  } else {
-    return MonoOutput::from8Bit(0);  // Hiljaisuus
-  }
-}
+envelope.setADLevels(255, 200);  // Attack, Sustain -tasot
+envelope.setTimes(20, 50, 300, 100);  // Attack, Decay, Sustain, Release (ms)
 ```
 
-**Matematiikka:**
+- **Attack**: Kuinka nopeasti ääni nousee (ms)
+- **Decay**: Kuinka nopeasti ääni laskee sustain-tasolle (ms)
+- **Sustain**: Kuinka kauan sustain-taso kestää (ms)
+- **Release**: Kuinka nopeasti ääni häipyy (ms)
 
-Jos mixed = 100 ja envLevel = 200:
-```
-output = (100 * 200) >> 8
-       = 20000 >> 8
-       = 20000 / 256
-       = 78
-```
+### Muuta GPIO-pinnit
 
-Näin envelope vaikuttaa äänenvoimakkuuteen.
-
-### Nuotin vaihto
+Jos GPIO 4, 5, 6 ovat varattuja muuhun käyttöön, voit muuttaa pinnit tiedostossa `AudioConfigESP32.h`:
 
 ```cpp
-void updateControl() {
-  unsigned long currentTime = millis();
-  Note currentNoteData = melody[currentNote];
-  
-  // Onko nuotti soitettu tarpeeksi kauan?
-  if (currentTime - noteStartTime >= currentNoteData.duration) {
-    
-    // Lopeta vanha nuotti
-    if (notePlaying) {
-      envelope.noteOff();  // Release-vaihe alkaa
-    }
-    
-    // Aloita uusi nuotti
-    playNote(currentNote + 1);
-  }
-  
-  // Päivitä envelope (liikuttaa A/D/S/R-käyrällä)
-  envelope.update();
-}
+#define I2S_BCLK_PIN 14    // Vaihda haluamaksesi
+#define I2S_LRCLK_PIN 15   // Vaihda haluamaksesi
+#define I2S_DOUT_PIN 16    // Vaihda haluamaksesi
 ```
 
-**Aikajana esimerkki:**
+## Vianmääritys
 
-```
-t=0ms     playNote(0) → F4, 300ms
-t=15ms    updateControl() → tarkista aika
-t=31ms    updateControl() → tarkista aika
-...
-t=300ms   updateControl() → vaihda nuottiin 1
-t=300ms   playNote(1) → E4, 300ms
-...
-```
+### Ei ääntä
 
-## Muistin käyttö
+1. Tarkista kytkennät multimetrillä
+2. Varmista että MAX98357A saa virran (LED palaa)
+3. Tarkista Serial Monitor - näkyykö nuotteja?
+4. Kokeile nostaa GAIN-pinni VIN:iin (9dB)
+5. Mittaa oskilloskoopilla DIN-pinniltä - näkyykö signaali?
 
-### Flash-muisti (ohjelmakoodi)
+### Ääni säröilee
 
-- Mozzi-kirjasto: ~50 KB
-- Aaltomuototaulukot: ~4 KB (2048 × 2 näytettä)
-- Ohjelmakoodi: ~10 KB
-- **Yhteensä: ~64 KB**
+1. Laske äänenvoimakkuutta GAIN-pinnillä (kytke GND:hen)
+2. Varmista että virtalähde antaa riittävästi virtaa
+3. Käytä erillisiä GND- ja VCC-johtoja MAX98357A:lle
 
-### RAM-muisti
+### Käännösvirheet
 
-- Mozzi-puskurit: ~2 KB
-- I2S DMA-puskurit: ~4 KB
-- Melody-taulukko: ~200 bytes
-- Muuttujat: ~1 KB
-- **Yhteensä: ~7 KB**
+**"Mozzi.h: No such file or directory"**
+- Asenna Mozzi-kirjasto Library Managerista
 
-ESP32-S3:ssa on 512 KB RAM, joten muisti ei ole ongelma.
+**"I2S driver install failed"**
+- GPIO-pinnit ovat käytössä jossain muualla
+- Muuta pinnit `AudioConfigESP32.h` -tiedostossa
 
-### Prosessorikuorma
+**"undefined reference to 'i2s_driver_install'"**
+- Valitse Tools → Board → ESP32-yhteensopiva levy
 
-**Control Rate (64 Hz):**
-- Suoritus kerran per 15.6ms
-- Kesto: ~100 µs
-- Kuorma: 0.6%
+### ESP32-S2 erityistapaukset
 
-**Audio Rate (16384 Hz):**
-- Suoritus kerran per 61 µs
-- Kesto: ~10 µs
-- Kuorma: 16%
+ESP32-S2:ssa on vain yksi I2S-periferia. Jos käytät I2S:ää muuhun (esim. mikrofoni), melodian soitto ei toimi samanaikaisesti.
 
-**I2S-ajuri:**
-- DMA hoitaa siirron automaattisesti
-- Ei kuormita CPU:ta
+## Tekniset yksityiskohdat
 
-**Yhteensä: ~17% CPU-käyttö @ 240 MHz**
+### Audionäytteenottotaajuus
 
-## Laajennusmahdollisuudet
+16384 Hz (16 kHz). Riittävä puheelle ja yksinkertaisille melodioille.
 
-### 1. Lisää oskillaattoreita (harmonia)
+### MIDI-nuottijärjestelmä
+
+Ohjelma käyttää MIDI-numeroita (60 = C4, keskimmäinen C). Mozzi muuntaa MIDI-numeron taajuudeksi funktiolla `mtof()` (MIDI to Frequency).
+
+### I2S-protokolla
+
+I2S (Inter-IC Sound) on sarjaväyläprotokolla audion siirtoon. Kolme signaalia:
+- **BCLK (Bit Clock)**: Kellopulssi jokaiselle bitille
+- **LRCLK (Left-Right Clock)**: Näytekello, vaihtelee vasemman/oikean kanavan välillä  
+- **DIN (Data In)**: Audiodata
+
+Näytteenottotaajuus = LRCLK-taajuus. Tässä 16384 Hz.
+
+### Mozzi-arkkitehtuuri
+
+Mozzi toimii kahdella päivitysnopeudella:
+
+1. **Control Rate** (64 Hz): `updateControl()` - musiikin logiikka
+2. **Audio Rate** (16384 Hz): `updateAudio()` - audionäytteiden generointi
+
+Tämä kahdentason rakenne pitää prosessorikuorman kohtuullisena.
+
+## Lisäominaisuuksia
+
+### Lisää harmonia
+
+Luo kolmas oskillaattori kvintin tai terssin päähän:
 
 ```cpp
 Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> aOscil3(SIN2048_DATA);
 
-void playNote(int noteIndex) {
-  // ...
-  aOscil3.setFreq(mtof(note.pitch + 7)); // Kvintti (+7 puolisäveltä)
-}
+// updateControl():ssa
+float freq = mtof(note.pitch);
+aOscil3.setFreq(mtof(note.pitch + 7)); // Kvintti (+7 puolisäveltä)
 
-AudioOutput_t updateAudio() {
-  int sample3 = aOscil3.next();
-  int mixed = (sample1 + sample2 + sample3) / 3;
-  // ...
-}
+// updateAudio():ssa
+int sample3 = aOscil3.next();
+int mixed = (sample1 + sample2 + sample3) / 3;
 ```
 
-### 2. Lisää efektejä
+### Lisää efektejä
 
+Mozzi sisältää efektikirjaston:
+- Reverb
+- Delay
+- Flanger
+- Chorus
+- Distortion
+
+Esimerkki:
 ```cpp
 #include <ReverbTank.h>
 ReverbTank reverb;
-
-AudioOutput_t updateAudio() {
-  // ... generointi ...
-  int withReverb = reverb.next(output);
-  return MonoOutput::from8Bit(withReverb);
-}
 ```
 
-### 3. Dynaaminen tempo
+### Tallenna melodia SD-kortille
 
-```cpp
-float tempoMultiplier = 1.0; // 1.0 = normaali, 2.0 = kaksinkertainen
+Muunna audiovirta WAV-tiedostoksi ja tallenna SD-kortille toistoa varten.
 
-void playNote(int noteIndex) {
-  // ...
-  int adjustedDuration = note.duration / tempoMultiplier;
-  // Käytä adjustedDuration ajan tarkistuksessa
-}
-```
+## Lähdekoodi
 
-### 4. Useita instrumentteja
+Koodi on jaettu selkeisiin osiohin:
 
-```cpp
-enum Instrument {
-  PIANO,
-  GUITAR,
-  FLUTE
-};
+1. **Kirjastot ja konfiguraatio** (rivit 1-30)
+2. **Audio-objektit** (rivit 32-40)
+3. **Melodiadata** (rivit 42-160)
+4. **Setup-funktio** (rivit 162-200)
+5. **Nuottien soitto** (rivit 202-250)
+6. **Kontrollilogiikka** (rivit 252-280)
+7. **Audionäytteiden generointi** (rivit 282-310)
+8. **Pääsilmukka** (rivit 312-315)
 
-void setInstrument(Instrument inst) {
-  switch(inst) {
-    case PIANO:
-      // Sini-aalto, nopea attack
-      envelope.setTimes(5, 50, 200, 300);
-      break;
-    case GUITAR:
-      // Saha-aalto, keskipitkä attack
-      envelope.setTimes(20, 100, 300, 100);
-      break;
-    case FLUTE:
-      // Kolmio-aalto, hidas attack
-      envelope.setTimes(100, 50, 400, 200);
-      break;
-  }
-}
-```
+Jokainen funktio on dokumentoitu koodin sisällä.
 
-## Yhteenveto
+## Lisenssi
 
-Ohjelma on modulaarinen äänisyntetisaattori, joka yhdistää:
-- **Oskillaattorit** → Perusääni
-- **ADSR-envelope** → Dynamiikka
-- **MIDI-järjestelmä** → Nuottien määrittely
-- **I2S-protokolla** → Audion siirto
-- **MAX98357A** → DA-muunnos ja vahvistus
+Koodi on MIT-lisensoitu. Mozzi-kirjasto on LGPL 2.1 -lisensoitu.
 
-Arkkitehtuuri on selkeä ja laajennettavissa. Mozzi-kirjasto käsittelee audion matalalla tasolla, jolloin ohjelmointi pysyy korkealla tasolla.
+## Tekijä
 
-Kahden tason päivitysjärjestelmä (64 Hz kontrolli, 16384 Hz audio) pitää prosessorikuorman alhaisena samalla kun audion laatu riittää musiikin toistoon.
+Toteutettu Mozzi-kirjastolla ja ESP32-alustalla. Melodia: The Beatles - "Yesterday" (Lennon/McCartney).
+
+## Lähteet
+
+- [Mozzi-dokumentaatio](https://sensorium.github.io/Mozzi/)
+- [ESP32-I2S-dokumentaatio](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/i2s.html)
+- [MAX98357A-datalevy](https://www.analog.com/media/en/technical-documentation/data-sheets/MAX98357A-MAX98357B.pdf)
